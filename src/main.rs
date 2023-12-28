@@ -6,15 +6,17 @@ use bevy::{
         component::Component,
         entity::Entity,
         query::With,
-        system::{Commands, Query, Res, ResMut, Resource},
+        schedule::IntoSystemConfigs,
+        system::{Commands, Query},
     },
-    math::{Quat, Rect, Vec2, Vec3},
+    math::{Rect, Vec2, Vec3},
     sprite::{Sprite, SpriteBundle},
     transform::components::Transform,
+    utils::hashbrown::HashSet,
     window::Window,
     DefaultPlugins,
 };
-use rand::{rngs, thread_rng, Rng};
+use rand::{thread_rng, Rng};
 
 #[derive(Debug, Clone, Default, Component)]
 struct Position(Vec2);
@@ -25,18 +27,18 @@ struct Velocity(Vec2);
 #[derive(Debug, Clone, Default, Component)]
 struct Acceleration(Vec2);
 
-/// Gravitational constant
-const G: f32 = 6.67430e-11;
-// const G: f32 = 6.6e-21;
-
 #[derive(Debug, Clone, Default, Component)]
 struct Mass(f32);
+
+#[derive(Debug, Clone, Default, Component)]
+struct Radius(f32);
 
 #[derive(Clone, Bundle, Default)]
 struct Particle {
     position: Position,
     velocity: Velocity,
     acceleration: Acceleration,
+    radius: Radius,
     mass: Mass,
     sprite: SpriteBundle,
 }
@@ -78,11 +80,21 @@ fn sync_position_and_sprite(mut query: Query<(&mut Transform, &Position)>, windo
     let window = window.single();
     query.par_iter_mut().for_each(|(mut transform, position)| {
         transform.translation = Vec3::new(
-            position.0.x * window.width(),
-            position.0.y * window.height(),
+            position.0.x * window.width() / 2.,
+            position.0.y * window.height() / 2.,
             0.,
         )
     });
+}
+/// Sync sprite with size
+fn sync_radius_and_sprite(window: Query<&Window>, mut particles: Query<(&mut Sprite, &Radius)>) {
+    let window = window.single();
+    particles.par_iter_mut().for_each(|(mut sprite, radius)| {
+        sprite.custom_size = Some(Vec2::new(
+            radius.0 * window.width(),
+            radius.0 * window.height(),
+        ))
+    })
 }
 /// Change position using velocity.
 fn apply_velocity(mut query: Query<(&mut Position, &Velocity)>) {
@@ -104,6 +116,10 @@ fn apply_gravity(
     mut accelerators: Query<(Entity, &Position, &mut Acceleration), With<Mass>>,
     attractors: Query<(Entity, &Position, &Mass)>,
 ) {
+    /// Gravitational constant
+    const G: f32 = 6.67430e-11;
+    // const G: f32 = 6.6e-21;
+
     /// Acceleration due to gravity towards other
     fn attraction_to(this: &Position, other: (&Position, &Mass)) -> Acceleration {
         let dp = other.0 .0 - this.0;
@@ -125,14 +141,63 @@ fn apply_gravity(
                 })
         });
 }
-/// Set the size of the particle sprites to their mass
-fn sprite_proportional_to_mass(mut particles: Query<(&mut Sprite, &Mass)>) {
-    particles.par_iter_mut().for_each(|(mut sprite, mass)| {
-        sprite.custom_size = Some(Vec2 {
-            x: mass.0.sqrt(),
-            y: mass.0.sqrt(),
-        })
+/// Set the size of objects proportional to their mass
+fn sync_mass_and_radius(mut particles: Query<(&mut Radius, &Mass)>) {
+    particles
+        .par_iter_mut()
+        .for_each(|(mut radius, mass)| radius.0 = mass.0.sqrt() / 1000.);
+}
+
+/// Merge entities that collide
+fn merge_colliders(
+    mut commands: Commands,
+    mut shared_query: Query<(&mut Mass, Option<&mut Velocity>)>,
+    merge_target: Query<(Entity, &Position, &Radius), With<Mass>>,
+    merge_source: Query<(Entity, &Position), With<Mass>>,
+) {
+    let mut to_despawn = HashSet::new();
+    // Without grouping all sources at once this won't be deterministic because floats don't commute
+    merge_target.iter().for_each(|target| {
+        merge_source
+            .iter()
+            .filter(|source| {
+                source.0 != target.0
+                    // source in target
+                    && (target.1.0.distance(source.1.0)) < (target.2.0)
+            }) // keep entities that are not the same and contains in the target
+            .for_each(|source| {
+                // source smaller than target
+                let target_mass = shared_query.component::<Mass>(target.0).0;
+                let source_mass = shared_query.component::<Mass>(source.0).0;
+                // only despawn smaller
+                if target_mass > source_mass
+                // or first encountered of same mass
+                    || (target_mass == source_mass && !to_despawn.contains(&target.0))
+                {
+                    let mass_final = source_mass + target_mass;
+                    // Merge velocity with momentum conservation
+                    if let Ok(source_velocity) =
+                        shared_query.get_component::<Velocity>(source.0).cloned()
+                    {
+                        if let Ok(mut target_velocity) =
+                            shared_query.get_component_mut::<Velocity>(target.0)
+                        {
+                            target_velocity.0 = (source_mass * source_velocity.0
+                                + target_mass * target_velocity.0)
+                                / (mass_final);
+                        }
+                    }
+
+                    // Combine mass
+                    shared_query.component_mut::<Mass>(target.0).0 = mass_final;
+                    to_despawn.insert(source.0);
+                }
+            })
     });
+    // Despawn queued
+    to_despawn
+        .into_iter()
+        .for_each(|x| commands.entity(x).despawn());
 }
 
 fn setup(mut commands: Commands) {
@@ -143,19 +208,30 @@ fn setup(mut commands: Commands) {
     commands.spawn_batch(
         std::iter::repeat_with(|| {
             Particle::new_rand(
-                Rect::new(-0.1, -0.1, 0.1, 0.1),
-                Rect::new(-0.001, -0.001, 0.002, 0.002),
+                Rect::new(-0.4, -0.4, 0.4, 0.4),
+                Rect::new(-0.001, -0.001, 0.001, 0.001),
             )
         })
         .take(10000),
     );
 
-    commands
-        .spawn(Particle {
-            mass: Mass(1000.),
-            ..Default::default()
-        })
-        .remove::<(Acceleration, Velocity)>();
+    // Larger center attractor
+    commands.spawn(Particle {
+        mass: Mass(100.),
+        ..Default::default()
+    });
+    commands.spawn(Particle {
+        position: Position(Vec2::new(0.5, 0.6)),
+        velocity: Velocity(Vec2::new(0., -0.02)),
+        mass: Mass(500.),
+        ..Default::default()
+    });
+    commands.spawn(Particle {
+        position: Position(Vec2::new(0.5, -0.6)),
+        velocity: Velocity(Vec2::new(0., 0.01)),
+        mass: Mass(1000.),
+        ..Default::default()
+    });
 }
 
 fn main() {
@@ -166,6 +242,8 @@ fn main() {
         .add_systems(Update, apply_acceleration)
         .add_systems(Update, apply_velocity)
         .add_systems(Update, sync_position_and_sprite)
-        .add_systems(Update, sprite_proportional_to_mass)
+        .add_systems(Update, merge_colliders.after(apply_acceleration)) // merge colliders ignores accelerations
+        .add_systems(Update, sync_mass_and_radius)
+        .add_systems(Update, sync_radius_and_sprite)
         .run();
 }
