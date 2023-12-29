@@ -1,5 +1,6 @@
 use bevy::{
     app::{App, Startup, Update},
+    asset::{Assets, Handle},
     core_pipeline::core_2d::Camera2dBundle,
     ecs::{
         bundle::Bundle,
@@ -7,10 +8,14 @@ use bevy::{
         entity::Entity,
         query::{Changed, With},
         schedule::IntoSystemConfigs,
-        system::{Commands, Query},
+        system::{Commands, Query, ResMut},
     },
     math::{Rect, Vec2, Vec3},
-    sprite::{Sprite, SpriteBundle},
+    render::{
+        color::Color,
+        mesh::{shape, Mesh},
+    },
+    sprite::{ColorMaterial, MaterialMesh2dBundle, Mesh2dHandle},
     transform::components::Transform,
     utils::hashbrown::HashSet,
     window::Window,
@@ -40,7 +45,7 @@ struct Particle {
     acceleration: Acceleration,
     radius: Radius,
     mass: Mass,
-    sprite: SpriteBundle,
+    sprite: MaterialMesh2dBundle<ColorMaterial>,
 }
 
 fn rand_vec2_in_rect(rng: &mut impl Rng, rect: Rect) -> Vec2 {
@@ -51,23 +56,18 @@ fn rand_vec2_in_rect(rng: &mut impl Rng, rect: Rect) -> Vec2 {
 }
 
 impl Particle {
-    fn new_rand(position_rect: Rect, velocity_rect: Rect) -> Particle {
+    fn new_rand(
+        position_rect: Rect,
+        velocity_rect: Rect,
+        material: Handle<ColorMaterial>,
+    ) -> Particle {
         let mut rng = thread_rng();
         Particle {
             velocity: Velocity(rand_vec2_in_rect(&mut rng, velocity_rect)),
             position: Position(rand_vec2_in_rect(&mut rng, position_rect)),
             mass: Mass(1.),
-            sprite: SpriteBundle {
-                sprite: Sprite {
-                    color: bevy::render::color::Color::Rgba {
-                        red: 1.,
-                        green: 0.,
-                        blue: 0.,
-                        alpha: 1.,
-                    },
-                    custom_size: Some(Vec2 { x: 1., y: 1. }),
-                    ..Default::default()
-                },
+            sprite: MaterialMesh2dBundle {
+                material,
                 ..Default::default()
             },
             ..Default::default()
@@ -82,10 +82,13 @@ fn sync_position_and_sprite(mut query: Query<(&mut Transform, &Position), Change
     });
 }
 /// Sync sprite with size
-fn sync_radius_and_sprite(mut particles: Query<(&mut Sprite, &Radius), Changed<Radius>>) {
-    particles
-        .par_iter_mut()
-        .for_each(|(mut sprite, radius)| sprite.custom_size = Some(Vec2::new(radius.0, radius.0)))
+fn sync_radius_and_sprite(
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut particles: Query<(&mut Mesh2dHandle, &Radius), Changed<Radius>>,
+) {
+    particles.iter_mut().for_each(|(mut sprite, radius)| {
+        *sprite = meshes.add(shape::Circle::new(radius.0).into()).into();
+    })
 }
 /// Change position using velocity.
 fn apply_velocity(mut query: Query<(&mut Position, &Velocity)>) {
@@ -147,7 +150,7 @@ fn merge_colliders(
     merge_source: Query<(Entity, &Position), With<Mass>>,
 ) {
     let mut to_despawn = HashSet::new();
-    // Without grouping all sources at once this won't be deterministic because floats don't commute
+    // Without grouping all sources at once this won't be deterministic in parallel because floats don't commute
     merge_target.iter().for_each(|target| {
         merge_source
             .iter()
@@ -191,7 +194,11 @@ fn merge_colliders(
         .for_each(|x| commands.entity(x).despawn());
 }
 
-fn setup(mut commands: Commands, window: Query<&Window>) {
+fn setup(
+    mut commands: Commands,
+    window: Query<&Window>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     let window = window.single();
     // Camera
     commands.spawn(Camera2dBundle {
@@ -202,12 +209,14 @@ fn setup(mut commands: Commands, window: Query<&Window>) {
         ..Default::default()
     });
 
+    let material = materials.add(ColorMaterial::from(Color::RED));
     // Randomized initial particles
     commands.spawn_batch(
-        std::iter::repeat_with(|| {
+        std::iter::repeat_with(move || {
             Particle::new_rand(
                 Rect::new(-0.4, -0.4, 0.4, 0.4),
                 Rect::new(-0.001, -0.001, 0.001, 0.001),
+                material.clone(),
             )
         })
         .take(10000),
@@ -240,8 +249,8 @@ fn main() {
         .add_systems(Update, apply_acceleration.after(apply_gravity))
         .add_systems(Update, apply_velocity.after(apply_acceleration))
         .add_systems(Update, merge_colliders.after(apply_acceleration)) // merge colliders ignores accelerations
-        .add_systems(Update, sync_mass_and_radius)
-        .add_systems(Update, sync_position_and_sprite)
-        .add_systems(Update, sync_radius_and_sprite)
+        .add_systems(Update, sync_mass_and_radius.after(merge_colliders))
+        .add_systems(Update, sync_radius_and_sprite.after(sync_mass_and_radius))
+        .add_systems(Update, sync_position_and_sprite.after(apply_velocity))
         .run();
 }
