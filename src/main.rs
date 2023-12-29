@@ -5,7 +5,7 @@ use bevy::{
         bundle::Bundle,
         component::Component,
         entity::Entity,
-        query::With,
+        query::{Changed, With},
         schedule::IntoSystemConfigs,
         system::{Commands, Query},
     },
@@ -76,25 +76,16 @@ impl Particle {
 }
 
 /// Move sprites to entities' position. Assumes the window is [-1.,1.] in both x and y
-fn sync_position_and_sprite(mut query: Query<(&mut Transform, &Position)>, window: Query<&Window>) {
-    let window = window.single();
+fn sync_position_and_sprite(mut query: Query<(&mut Transform, &Position), Changed<Position>>) {
     query.par_iter_mut().for_each(|(mut transform, position)| {
-        transform.translation = Vec3::new(
-            position.0.x * window.width() / 2.,
-            position.0.y * window.height() / 2.,
-            0.,
-        )
+        transform.translation = Vec3::new(position.0.x, position.0.y, 0.)
     });
 }
 /// Sync sprite with size
-fn sync_radius_and_sprite(window: Query<&Window>, mut particles: Query<(&mut Sprite, &Radius)>) {
-    let window = window.single();
-    particles.par_iter_mut().for_each(|(mut sprite, radius)| {
-        sprite.custom_size = Some(Vec2::new(
-            radius.0 * window.width(),
-            radius.0 * window.height(),
-        ))
-    })
+fn sync_radius_and_sprite(mut particles: Query<(&mut Sprite, &Radius), Changed<Radius>>) {
+    particles
+        .par_iter_mut()
+        .for_each(|(mut sprite, radius)| sprite.custom_size = Some(Vec2::new(radius.0, radius.0)))
 }
 /// Change position using velocity.
 fn apply_velocity(mut query: Query<(&mut Position, &Velocity)>) {
@@ -142,7 +133,7 @@ fn apply_gravity(
         });
 }
 /// Set the size of objects proportional to their mass
-fn sync_mass_and_radius(mut particles: Query<(&mut Radius, &Mass)>) {
+fn sync_mass_and_radius(mut particles: Query<(&mut Radius, &Mass), Changed<Mass>>) {
     particles
         .par_iter_mut()
         .for_each(|(mut radius, mass)| radius.0 = mass.0.sqrt() / 1000.);
@@ -200,9 +191,16 @@ fn merge_colliders(
         .for_each(|x| commands.entity(x).despawn());
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, window: Query<&Window>) {
+    let window = window.single();
     // Camera
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera2dBundle {
+        transform: Transform {
+            scale: Vec3::ONE / window.height().min(window.width()),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
 
     // Randomized initial particles
     commands.spawn_batch(
@@ -239,11 +237,11 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, setup)
         .add_systems(Update, apply_gravity)
-        .add_systems(Update, apply_acceleration)
-        .add_systems(Update, apply_velocity)
-        .add_systems(Update, sync_position_and_sprite)
+        .add_systems(Update, apply_acceleration.after(apply_gravity))
+        .add_systems(Update, apply_velocity.after(apply_acceleration))
         .add_systems(Update, merge_colliders.after(apply_acceleration)) // merge colliders ignores accelerations
         .add_systems(Update, sync_mass_and_radius)
+        .add_systems(Update, sync_position_and_sprite)
         .add_systems(Update, sync_radius_and_sprite)
         .run();
 }
