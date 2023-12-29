@@ -26,6 +26,7 @@ use bevy::{
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use rand::{thread_rng, Rng};
+use std::sync::Mutex;
 
 /// Gravitational constant
 const G: f32 = 6.67430e-11;
@@ -268,17 +269,18 @@ fn potential_energy(
     query2: Query<(Entity, &Position, &Mass)>,
     mut energy: ResMut<PotentialGraphPoints>,
 ) {
-    let val = query
-        .iter()
-        .map(|x| {
-            query2
-                .iter()
-                .filter(move |y| x.0 != y.0)
-                .map(|y| -(x.2 .0 * y.2 .0 * G) / x.1 .0.distance(y.1 .0))
-                .sum::<f32>()
-        })
-        .sum::<f32>();
-    energy.points.push(Energy(val));
+    // perf: found Mutex slightly faster than using std::sync::mpsc and equal to atomic_float::AtomicF32
+    let acc = Mutex::new(0.);
+    query.par_iter().for_each(|x| {
+        let val = query2
+            .iter()
+            .filter(move |y| x.0 != y.0)
+            .map(|y| -(x.2 .0 * y.2 .0 * G) / x.1 .0.distance(y.1 .0))
+            .sum::<f32>();
+        *acc.lock().unwrap() += val;
+    });
+    let val = acc.lock().unwrap();
+    energy.points.push(Energy(*val));
     // println!("P energy: {:?}", val);
 }
 fn graph(
