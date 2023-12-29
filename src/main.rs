@@ -2,13 +2,15 @@ use bevy::{
     app::{App, Startup, Update},
     asset::{Assets, Handle},
     core_pipeline::core_2d::Camera2dBundle,
+    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     ecs::{
         bundle::Bundle,
         component::Component,
         entity::Entity,
+        event::Event,
         query::{Changed, With},
         schedule::IntoSystemConfigs,
-        system::{Commands, Query, ResMut},
+        system::{Commands, Query, Res, ResMut, Resource},
     },
     math::{Rect, Vec2, Vec3},
     render::{
@@ -21,7 +23,12 @@ use bevy::{
     window::Window,
     DefaultPlugins,
 };
+use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use egui_plot::{Legend, Line, Plot, PlotPoints};
 use rand::{thread_rng, Rng};
+
+/// Gravitational constant
+const G: f32 = 6.67430e-11;
 
 #[derive(Debug, Clone, Default, Component)]
 struct Position(Vec2);
@@ -110,18 +117,13 @@ fn apply_gravity(
     mut accelerators: Query<(Entity, &Position, &mut Acceleration), With<Mass>>,
     attractors: Query<(Entity, &Position, &Mass)>,
 ) {
-    /// Gravitational constant
-    const G: f32 = 6.67430e-11;
-    // const G: f32 = 6.6e-21;
-
     /// Acceleration due to gravity towards other
     fn attraction_to(this: &Position, other: (&Position, &Mass)) -> Acceleration {
         let dp = other.0 .0 - this.0;
-        Acceleration(dp.normalize() * G * other.1 .0 / dp.length().powi(2)) // self mass cancels when calculating acceleration
-    }
-    /// Apply attraction to `other` onto `this`
-    fn attract_to(this: (&Position, &mut Acceleration), other: (&Position, &Mass)) {
-        this.1 .0 += attraction_to(this.0, other).0
+        let dp_len = dp.length();
+        // Acceleration(dp / dp_len * G * other.1 .0 / dp_len.powi(2))
+        // perf: simplification of above
+        Acceleration(dp * G * other.1 .0 / dp_len.powi(3)) // self mass cancels when calculating acceleration
     }
 
     accelerators
@@ -131,7 +133,7 @@ fn apply_gravity(
                 .iter()
                 .filter(|(inner_entity, _, _)| inner_entity != &outer_entity)
                 .for_each(|(_, position, mass)| {
-                    attract_to((outer_position, &mut *accel), (position, mass))
+                    accel.0 += attraction_to(outer_position, (position, mass)).0
                 })
         });
 }
@@ -241,9 +243,84 @@ fn setup(
     });
 }
 
+#[derive(Default, Debug, Clone, Event)]
+struct Energy(f32);
+
+#[derive(Debug, Default, Clone, Resource)]
+struct KineticGraphPoints {
+    points: Vec<Energy>,
+}
+#[derive(Debug, Default, Clone, Resource)]
+struct PotentialGraphPoints {
+    points: Vec<Energy>,
+}
+fn kinetic_energy(query: Query<(&Velocity, &Mass)>, mut energy: ResMut<KineticGraphPoints>) {
+    let val = query
+        .iter()
+        .map(|(Velocity(v), Mass(m))| 0.5 * m * v.length().powi(2))
+        .sum::<f32>();
+    energy.points.push(Energy(val));
+    // println!("K energy: {:?}", val);
+}
+
+fn potential_energy(
+    query: Query<(Entity, &Position, &Mass)>,
+    query2: Query<(Entity, &Position, &Mass)>,
+    mut energy: ResMut<PotentialGraphPoints>,
+) {
+    let val = query
+        .iter()
+        .map(|x| {
+            query2
+                .iter()
+                .filter(move |y| x.0 != y.0)
+                .map(|y| -(x.2 .0 * y.2 .0 * G) / x.1 .0.distance(y.1 .0))
+                .sum::<f32>()
+        })
+        .sum::<f32>();
+    energy.points.push(Energy(val));
+    // println!("P energy: {:?}", val);
+}
+fn graph(
+    mut contexts: EguiContexts,
+    kinetic_energy: Res<KineticGraphPoints>,
+    potential_energy: Res<PotentialGraphPoints>,
+) {
+    egui::Window::new("System Energy").show(contexts.ctx_mut(), |ui| {
+        let vec_to_line = |vec: &Vec<_>| {
+            Line::new(
+                vec.iter()
+                    .enumerate()
+                    .map(|(i, val): (_, &Energy)| [i as f64, val.0 as f64])
+                    .collect::<PlotPoints>(),
+            )
+        };
+        let kinetic_line = vec_to_line(&kinetic_energy.points);
+        let potential_line = vec_to_line(&potential_energy.points);
+        ui.columns(2, |columns| {
+            columns[0].label("Kinetic Energy");
+            Plot::new("kinetic")
+                // .view_aspect(1.8)
+                .auto_bounds_x()
+                .auto_bounds_y()
+                .legend(Legend::default())
+                .show(&mut columns[0], |plot_ui| {
+                    plot_ui.line(kinetic_line);
+                });
+            columns[1].label("Potential Energy");
+            Plot::new("potential")
+                .auto_bounds_x()
+                .auto_bounds_y()
+                .show(&mut columns[1], |plot_ui| plot_ui.line(potential_line));
+        });
+    });
+}
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin)
+        .add_plugins(LogDiagnosticsPlugin::default())
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_systems(Startup, setup)
         .add_systems(Update, apply_gravity)
         .add_systems(Update, apply_acceleration.after(apply_gravity))
@@ -252,5 +329,10 @@ fn main() {
         .add_systems(Update, sync_mass_and_radius.after(merge_colliders))
         .add_systems(Update, sync_radius_and_sprite.after(sync_mass_and_radius))
         .add_systems(Update, sync_position_and_sprite.after(apply_velocity))
+        .add_systems(Update, kinetic_energy)
+        .add_systems(Update, potential_energy)
+        .insert_resource(KineticGraphPoints::default())
+        .insert_resource(PotentialGraphPoints::default())
+        .add_systems(Update, graph)
         .run();
 }
