@@ -3093,6 +3093,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spatial_hash"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "num-traits",
+ "smallvec",
+]
+
+[[package]]
 name = "spirv"
 version = "0.2.0+1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
