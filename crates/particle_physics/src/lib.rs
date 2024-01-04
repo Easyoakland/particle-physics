@@ -5,6 +5,7 @@ use bevy::{
     prelude::*,
     utils::HashSet,
 };
+use spatial_hash::SparseGrid2d;
 use std::marker::PhantomData;
 
 pub mod components;
@@ -48,6 +49,9 @@ impl<K, T: Clone> Clone for GraphPoints<K, T> {
     }
 }
 
+#[derive(Debug, Default, Resource)]
+struct SpatialHashes(pub Vec<SparseGrid2d>);
+
 /// Move sprites to entities' position. Assumes the window is [-1.,1.] in both x and y
 fn sync_position_and_sprite(mut query: Query<(&mut Transform, &Position), Changed<Position>>) {
     query.par_iter_mut().for_each(|(mut transform, position)| {
@@ -63,6 +67,26 @@ fn sync_radius_and_sprite(
         *sprite = meshes.add(shape::Circle::new(radius.0).into()).into();
     })
 }
+
+/// Generates spatial hashes with resolutions depending on radii
+fn gen_spatial_hashes(mut hashes: ResMut<SpatialHashes>, query: Query<&Radius>) {
+    if hashes.0.is_empty() {
+        hashes
+            .0
+            .push(SparseGrid2d::new(2. * query.iter().next().unwrap().0))
+    }
+}
+
+/// Rebuild spatial hashes and insert [`Position`]s into spatial hashes
+fn update_spatial_hashes(mut hashes: ResMut<SpatialHashes>, query: Query<(Entity, &Position)>) {
+    hashes.0.iter_mut().for_each(|x| x.soft_clear());
+    query.iter().for_each(|(entity, pos)| {
+        for hash in hashes.0.iter_mut() {
+            hash.insert_point(pos.0, entity)
+        }
+    })
+}
+
 /// Change position using velocity.
 fn apply_velocity(mut query: Query<(&mut Position, &Velocity)>) {
     query
@@ -116,45 +140,51 @@ fn merge_colliders(
     mut shared_query: Query<(&mut Mass, Option<&mut Velocity>)>,
     merge_target: Query<(Entity, &Position, &Radius), With<Mass>>,
     merge_source: Query<(Entity, &Position), With<Mass>>,
+    hashes: Res<SpatialHashes>,
 ) {
+    let hash = hashes.0.first().expect("missing spatial hash");
     let mut to_despawn = HashSet::new();
     // Without grouping all sources at once this won't be deterministic in parallel because floats don't commute
     merge_target.iter().for_each(|target| {
-        merge_source
-            .iter()
-            .filter(|source| {
-                source.0 != target.0
+        // iterate over items within the radius of self
+        hash.aabb_iter(Rect::from_center_half_size(
+            target.1 .0,
+            Vec2::splat(target.2 .0),
+        ))
+        .map(|entity| merge_source.get(entity).unwrap())
+        .filter(|source| {
+            source.0 != target.0
                     // source in target
                     && (target.1.0.distance(source.1.0)) < (target.2.0)
-            }) // keep entities that are not the same and contains in the target
-            .for_each(|source| {
-                // source smaller than target
-                let target_mass = shared_query.component::<Mass>(target.0).0;
-                let source_mass = shared_query.component::<Mass>(source.0).0;
-                // only despawn smaller
-                if target_mass > source_mass
+        }) // keep entities that are not the same and contains in the target
+        .for_each(|source| {
+            // source smaller than target
+            let target_mass = shared_query.component::<Mass>(target.0).0;
+            let source_mass = shared_query.component::<Mass>(source.0).0;
+            // only despawn smaller
+            if target_mass > source_mass
                 // or first encountered of same mass
                     || (target_mass == source_mass && !to_despawn.contains(&target.0))
+            {
+                let mass_final = source_mass + target_mass;
+                // Merge velocity with momentum conservation
+                if let Ok(source_velocity) =
+                    shared_query.get_component::<Velocity>(source.0).cloned()
                 {
-                    let mass_final = source_mass + target_mass;
-                    // Merge velocity with momentum conservation
-                    if let Ok(source_velocity) =
-                        shared_query.get_component::<Velocity>(source.0).cloned()
+                    if let Ok(mut target_velocity) =
+                        shared_query.get_component_mut::<Velocity>(target.0)
                     {
-                        if let Ok(mut target_velocity) =
-                            shared_query.get_component_mut::<Velocity>(target.0)
-                        {
-                            target_velocity.0 = (source_mass * source_velocity.0
-                                + target_mass * target_velocity.0)
-                                / (mass_final);
-                        }
+                        target_velocity.0 = (source_mass * source_velocity.0
+                            + target_mass * target_velocity.0)
+                            / (mass_final);
                     }
-
-                    // Combine mass
-                    shared_query.component_mut::<Mass>(target.0).0 = mass_final;
-                    to_despawn.insert(source.0);
                 }
-            })
+
+                // Combine mass
+                shared_query.component_mut::<Mass>(target.0).0 = mass_final;
+                to_despawn.insert(source.0);
+            }
+        })
     });
     // Despawn queued
     to_despawn
@@ -329,6 +359,13 @@ impl Plugin for ParticlePhysicsPlugin {
             .add_systems(PostUpdate, run_physics_step); // TODO where to put this?
 
         app.add_systems(Startup, setup)
+            .insert_resource(SpatialHashes::default())
+            .add_systems(
+                PhysicsStep,
+                (gen_spatial_hashes, update_spatial_hashes)
+                    .chain()
+                    .before(apply_gravity),
+            )
             .insert_resource(self.substeps)
             .add_systems(
                 PhysicsStep,
@@ -336,7 +373,7 @@ impl Plugin for ParticlePhysicsPlugin {
                     apply_gravity,
                     apply_acceleration,
                     apply_velocity,
-                    merge_colliders, // merge colliders ignores accelerations
+                    merge_colliders,
                 )
                     .chain(),
             )
