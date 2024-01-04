@@ -39,9 +39,9 @@ impl SparseGrid2d {
         self.map.entry(key).or_default().push(entity);
     }
 
-    /// Get an iterator with the entities in the grid cells containing the given aabb
+    /// Get an iterator of the entities in the key space grid cells containing the given aabb.
     ///
-    /// may contain duplicates if some entities are in more than one grid cell
+    /// May contain duplicates if some entities are in more than one grid cell.
     pub fn aabb_iter(&self, aabb: Rect) -> impl Iterator<Item = Entity> + '_ {
         KeyIter::new(self.tile_size, aabb)
             .filter_map(|key| self.map.get(&key))
@@ -75,9 +75,11 @@ impl SparseGrid2d {
 
     /// Get the key tile containing the point.
     fn key_from_point(&self, point: Vec2) -> Key {
+        // Because 0 is the first positive key space tile index and -1 is the first negative key space tile
+        // `floor()` is used for the positive (in addition to the negative) instead of `ceil()`
         (
-            (point.x / self.tile_size) as i32,
-            (point.y / self.tile_size) as i32,
+            (point.x / self.tile_size).floor() as i32,
+            (point.y / self.tile_size).floor() as i32,
         )
     }
 }

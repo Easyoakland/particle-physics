@@ -2695,6 +2695,7 @@ dependencies = [
  "egui_plot",
  "rand",
  "rand_core",
+ "spatial_hash",
 ]
 
 [[package]]

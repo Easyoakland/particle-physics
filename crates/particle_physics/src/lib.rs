@@ -7,7 +7,7 @@ use bevy::{
 };
 use std::marker::PhantomData;
 
-mod components;
+pub mod components;
 
 /// Gravitational constant
 const G: f32 = 6.67430e-11;
@@ -286,7 +286,7 @@ fn graph(
 
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 /// [`Schedule`] of things to do when stepping the physics simulation.
-struct PhysicsStep;
+pub struct PhysicsStep;
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Times to run [`PhysicsStep`] per frame.
