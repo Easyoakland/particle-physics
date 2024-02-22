@@ -5,19 +5,19 @@ use bevy::{
     sprite::{ColorMaterial, MaterialMesh2dBundle},
 };
 
-#[derive(Debug, Clone, Default, Component)]
+#[derive(Debug, Clone, Copy, Default, Component)]
 pub struct Position(pub Vec2);
 
-#[derive(Debug, Clone, Default, Component)]
+#[derive(Debug, Clone, Copy, Default, Component)]
 pub struct Velocity(pub Vec2);
 
-#[derive(Debug, Clone, Default, Component)]
+#[derive(Debug, Clone, Copy, Default, Component)]
 pub struct Acceleration(pub Vec2);
 
-#[derive(Debug, Clone, Default, Component)]
+#[derive(Debug, Clone, Copy, Default, Component)]
 pub struct Mass(pub f32);
 
-#[derive(Debug, Clone, Default, Component)]
+#[derive(Debug, Clone, Copy, Default, Component)]
 pub struct Radius(pub f32);
 
 #[derive(Clone, Bundle, Default)]

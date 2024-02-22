@@ -13,6 +13,6 @@ fn main() {
             substeps: particle_physics::Substeps(10),
         })
         .add_plugins(LogDiagnosticsPlugin::default())
-        .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        .add_plugins(FrameTimeDiagnosticsPlugin)
         .run();
 }

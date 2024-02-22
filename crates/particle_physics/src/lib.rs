@@ -13,7 +13,7 @@ pub mod components;
 /// Gravitational constant
 const G: f32 = 6.67430e-11;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy)]
 struct Energy(f32);
 
 struct Kinetic;
@@ -44,7 +44,7 @@ impl<K, T: Clone> Clone for GraphPoints<K, T> {
     fn clone(&self) -> Self {
         Self {
             points: self.points.clone(),
-            _ty: self._ty.clone(),
+            _ty: self._ty,
         }
     }
 }
@@ -64,7 +64,7 @@ fn sync_radius_and_sprite(
     mut particles: Query<(&mut bevy::sprite::Mesh2dHandle, &Radius), Changed<Radius>>,
 ) {
     particles.iter_mut().for_each(|(mut sprite, radius)| {
-        *sprite = meshes.add(shape::Circle::new(radius.0).into()).into();
+        *sprite = meshes.add(Circle::new(radius.0)).into();
     })
 }
 
@@ -79,7 +79,7 @@ fn gen_spatial_hashes(mut hashes: ResMut<SpatialHashes>, query: Query<&Radius>) 
 
 /// Rebuild spatial hashes and insert [`Position`]s into spatial hashes
 fn update_spatial_hashes(mut hashes: ResMut<SpatialHashes>, query: Query<(Entity, &Position)>) {
-    hashes.0.iter_mut().for_each(|x| x.soft_clear());
+    hashes.0.iter_mut().for_each(|x| x.clear());
     query.iter().for_each(|(entity, pos)| {
         for hash in hashes.0.iter_mut() {
             hash.insert_point(pos.0, entity)
@@ -159,29 +159,25 @@ fn merge_colliders(
         }) // keep entities that are not the same and contains in the target
         .for_each(|source| {
             // source smaller than target
-            let target_mass = shared_query.component::<Mass>(target.0).0;
-            let source_mass = shared_query.component::<Mass>(source.0).0;
+            let target_mass = *shared_query.get(target.0).unwrap().0;
+            let source_mass = *shared_query.get(source.0).unwrap().0;
             // only despawn smaller
-            if target_mass > source_mass
+            if target_mass.0 > source_mass.0
                 // or first encountered of same mass
-                    || (target_mass == source_mass && !to_despawn.contains(&target.0))
+                    || (target_mass.0 == source_mass.0 && !to_despawn.contains(&target.0))
             {
-                let mass_final = source_mass + target_mass;
+                let mass_final = Mass(source_mass.0 + target_mass.0);
                 // Merge velocity with momentum conservation
-                if let Ok(source_velocity) =
-                    shared_query.get_component::<Velocity>(source.0).cloned()
-                {
-                    if let Ok(mut target_velocity) =
-                        shared_query.get_component_mut::<Velocity>(target.0)
-                    {
-                        target_velocity.0 = (source_mass * source_velocity.0
-                            + target_mass * target_velocity.0)
-                            / (mass_final);
+                if let Some(source_velocity) = shared_query.get(source.0).unwrap().1.cloned() {
+                    if let Some(mut target_velocity) = shared_query.get_mut(target.0).unwrap().1 {
+                        target_velocity.0 = (source_mass.0 * source_velocity.0
+                            + target_mass.0 * target_velocity.0)
+                            / mass_final.0;
                     }
                 }
 
                 // Combine mass
-                shared_query.component_mut::<Mass>(target.0).0 = mass_final;
+                *shared_query.get_mut(target.0).unwrap().0 = mass_final;
                 to_despawn.insert(source.0);
             }
         })
@@ -283,7 +279,7 @@ fn graph(
     potential_energy: Res<GraphPoints<Potential, Energy>>,
 ) {
     use bevy_egui::egui;
-    use egui_plot::{Legend, Line, Plot, PlotPoints};
+    use egui_plot::{Line, Plot, PlotPoints};
     egui::Window::new("System Energy").show(contexts.ctx_mut(), |ui| {
         let vec_to_line = |vec: &Vec<_>| {
             Line::new(
@@ -297,19 +293,9 @@ fn graph(
         let potential_line = vec_to_line(&potential_energy.points);
         ui.columns(2, |columns| {
             columns[0].label("Kinetic Energy");
-            Plot::new("kinetic")
-                // .view_aspect(1.8)
-                .auto_bounds_x()
-                .auto_bounds_y()
-                .legend(Legend::default())
-                .show(&mut columns[0], |plot_ui| {
-                    plot_ui.line(kinetic_line);
-                });
+            Plot::new("kinetic").show(&mut columns[0], |plot_ui| plot_ui.line(kinetic_line));
             columns[1].label("Potential Energy");
-            Plot::new("potential")
-                .auto_bounds_x()
-                .auto_bounds_y()
-                .show(&mut columns[1], |plot_ui| plot_ui.line(potential_line));
+            Plot::new("potential").show(&mut columns[1], |plot_ui| plot_ui.line(potential_line));
         });
     });
 }
@@ -332,7 +318,7 @@ pub struct ParticlePhysicsPlugin {
     /// Graph statistics of simulation.
     pub graph: bool,
     /// Number of [`PhysicsStep`] to perform per frame.
-    // TODO `None` for adaptive to the framerate
+    // TODO enum for adaptive to the framerate
     pub substeps: Substeps,
 }
 

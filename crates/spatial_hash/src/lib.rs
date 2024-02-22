@@ -98,7 +98,7 @@ impl KeyIter {
     /// Make [`KeyIter`] over all keys that contain the aabb.
     /// If a key space location partially contains the aabb it is included in the iterator.
     fn new(tile_size: f32, aabb: Rect) -> Self {
-        let Rect { min, max } = aabb.into();
+        let Rect { min, max } = aabb;
         // convert to key space
         let s = tile_size;
         // by flooring the min and ceiling the max here it should include the key slot partially covered by the Rect.
