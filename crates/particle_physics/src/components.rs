@@ -15,6 +15,9 @@ pub struct Velocity(pub Vec2);
 pub struct Acceleration(pub Vec2);
 
 #[derive(Debug, Clone, Copy, Default, Component)]
+pub struct NewAcceleration(pub Vec2);
+
+#[derive(Debug, Clone, Copy, Default, Component)]
 pub struct Mass(pub f32);
 
 #[derive(Debug, Clone, Copy, Default, Component)]
@@ -25,6 +28,7 @@ pub struct Particle {
     pub position: Position,
     pub velocity: Velocity,
     pub acceleration: Acceleration,
+    pub new_acceleration: NewAcceleration,
     pub radius: Radius,
     pub mass: Mass,
     pub sprite: MaterialMesh2dBundle<ColorMaterial>,

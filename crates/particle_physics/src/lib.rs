@@ -1,10 +1,10 @@
-use crate::components::{Acceleration, Mass, Particle, Position, Radius, Velocity};
 use bevy::{
     app::{Plugin, Startup, Update},
     ecs::schedule::{IntoSystemConfigs, ScheduleLabel},
     prelude::*,
     utils::HashSet,
 };
+use components::{Acceleration, Mass, NewAcceleration, Particle, Position, Radius, Velocity};
 use spatial_hash::SparseGrid2d;
 use std::marker::PhantomData;
 
@@ -87,45 +87,57 @@ fn update_spatial_hashes(mut hashes: ResMut<SpatialHashes>, query: Query<(Entity
     })
 }
 
-/// Change position using velocity.
-fn apply_velocity(mut query: Query<(&mut Position, &Velocity)>) {
+/// Update position with verlet integration.
+fn update_position(mut query: Query<(&mut Position, &Velocity, &NewAcceleration)>) {
     query
         .par_iter_mut()
-        .for_each(|(mut position, velocity)| position.0 += velocity.0);
-}
-/// Change velocity using acceleration then reset acceleration.
-fn apply_acceleration(mut query: Query<(&mut Velocity, &mut Acceleration)>) {
-    query
-        .par_iter_mut()
-        .for_each(|(mut velocity, mut acceleration)| {
-            velocity.0 += acceleration.0;
-            acceleration.0 = Vec2::ZERO;
+        .for_each(|(mut position, velocity, acceleration)| {
+            // position += timestep * (velocity + timestep * acceleration / 2);
+            // timestep = 1
+            position.0 += velocity.0 + acceleration.0 / 2.
         });
 }
-/// Apply gravitational attraction to acceleration
-fn apply_gravity(
-    mut accelerators: Query<(Entity, &Position, &mut Acceleration), With<Mass>>,
+/// Update velocity with verlet integration.
+fn update_velocity(mut query: Query<(&mut Velocity, &Acceleration, &NewAcceleration)>) {
+    query
+        .par_iter_mut()
+        .for_each(|(mut velocity, acceleration, new_acceleration)| {
+            // velocity += timestep * (acceleration + newAcceleration) / 2;
+            // timestep = 1
+            velocity.0 += (acceleration.0 + new_acceleration.0) / 2.;
+        });
+}
+/// Calculate acceleration from force, and move `NewAcceleration` to `Acceleration`
+fn update_acceleration(
+    mut accelerators: Query<
+        (Entity, &Position, &mut Acceleration, &mut NewAcceleration),
+        With<Mass>,
+    >,
     attractors: Query<(Entity, &Position, &Mass)>,
 ) {
     /// Acceleration due to gravity towards other
-    fn attraction_to(this: &Position, other: (&Position, &Mass)) -> Acceleration {
+    fn attraction_to(this: &Position, other: (&Position, &Mass)) -> NewAcceleration {
         let dp = other.0 .0 - this.0;
         let dp_len = dp.length();
         // Acceleration(dp / dp_len * G * other.1 .0 / dp_len.powi(2))
         // perf: simplification of above, self mass cancels when calculating acceleration
-        Acceleration(dp * G * other.1 .0 / dp_len.powi(3))
+        NewAcceleration(dp * other.1 .0 / dp_len.powi(3))
     }
 
-    accelerators
-        .par_iter_mut()
-        .for_each(|(outer_entity, outer_position, mut accel)| {
+    // newAcceleration = force(time, position) / mass;
+    accelerators.par_iter_mut().for_each(
+        |(outer_entity, outer_position, mut accel, mut new_accel)| {
+            accel.0 = new_accel.0; // on new loop new_accel becomes old
+            new_accel.0 = Vec2::ZERO;
             attractors
                 .iter()
                 .filter(|(inner_entity, _, _)| inner_entity != &outer_entity)
                 .for_each(|(_, position, mass)| {
-                    accel.0 += attraction_to(outer_position, (position, mass)).0
-                })
-        });
+                    new_accel.0 += attraction_to(outer_position, (position, mass)).0
+                });
+            new_accel.0 *= G; // distributive law
+        },
+    );
 }
 /// Set the size of objects proportional to their mass
 fn sync_mass_and_radius(mut particles: Query<(&mut Radius, &Mass), Changed<Mass>>) {
@@ -346,26 +358,29 @@ impl Plugin for ParticlePhysicsPlugin {
 
         app.add_systems(Startup, setup)
             .insert_resource(SpatialHashes::default())
-            .add_systems(
-                PhysicsStep,
-                (gen_spatial_hashes, update_spatial_hashes)
-                    .chain()
-                    .before(apply_gravity),
-            )
             .insert_resource(self.substeps)
             .add_systems(
                 PhysicsStep,
                 (
-                    apply_gravity,
-                    apply_acceleration,
-                    apply_velocity,
+                    (gen_spatial_hashes, update_spatial_hashes).chain(),
+                    /*
+                    Verlet integration see: <https://gamedev.stackexchange.com/questions/15708/how-can-i-implement-gravity/41917#41917>
+                    acceleration = force(time, position) / mass;
+                    time += timestep;
+                    position += timestep * (velocity + timestep * acceleration / 2);
+                    newAcceleration = force(time, position) / mass;
+                    velocity += timestep * (acceleration + newAcceleration) / 2;
+                    */
+                    update_acceleration,
+                    update_velocity,
+                    update_position,
                     merge_colliders,
                 )
                     .chain(),
             )
             .add_systems(Update, sync_mass_and_radius.after(merge_colliders))
             .add_systems(Update, sync_radius_and_sprite.after(sync_mass_and_radius))
-            .add_systems(Update, sync_position_and_sprite.after(apply_velocity));
+            .add_systems(Update, sync_position_and_sprite.after(update_position));
         if self.graph {
             if !app.is_plugin_added::<bevy_egui::EguiPlugin>() {
                 app.add_plugins(bevy_egui::EguiPlugin);
