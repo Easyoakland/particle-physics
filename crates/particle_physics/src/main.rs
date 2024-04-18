@@ -10,6 +10,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(ParticlePhysicsPlugin {
             graph: true,
+            merge: true,
             substeps: particle_physics::Substeps(10),
         })
         .add_plugins(LogDiagnosticsPlugin::default())

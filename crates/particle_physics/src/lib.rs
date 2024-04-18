@@ -329,6 +329,8 @@ impl Default for Substeps {
 pub struct ParticlePhysicsPlugin {
     /// Graph statistics of simulation.
     pub graph: bool,
+    /// Merge colliders
+    pub merge: bool,
     /// Number of [`PhysicsStep`] to perform per frame.
     // TODO enum for adaptive to the framerate
     pub substeps: Substeps,
@@ -362,9 +364,8 @@ impl Plugin for ParticlePhysicsPlugin {
             .add_systems(
                 PhysicsStep,
                 (
-                    (gen_spatial_hashes, update_spatial_hashes).chain(),
                     /*
-                    Verlet integration see: <https://gamedev.stackexchange.com/questions/15708/how-can-i-implement-gravity/41917#41917>
+                    Velocity Verlet integration see: <https://gamedev.stackexchange.com/questions/15708/how-can-i-implement-gravity/41917#41917>
                     acceleration = force(time, position) / mass;
                     time += timestep;
                     position += timestep * (velocity + timestep * acceleration / 2);
@@ -374,21 +375,33 @@ impl Plugin for ParticlePhysicsPlugin {
                     update_acceleration,
                     update_velocity,
                     update_position,
-                    merge_colliders,
                 )
                     .chain(),
             )
             .add_systems(Update, sync_mass_and_radius.after(merge_colliders))
             .add_systems(Update, sync_radius_and_sprite.after(sync_mass_and_radius))
             .add_systems(Update, sync_position_and_sprite.after(update_position));
+        if self.merge {
+            app.add_systems(
+                PhysicsStep,
+                (gen_spatial_hashes, update_spatial_hashes)
+                    .chain()
+                    .before(update_acceleration),
+            );
+            app.add_systems(PhysicsStep, merge_colliders.after(update_position));
+        }
         if self.graph {
             if !app.is_plugin_added::<bevy_egui::EguiPlugin>() {
                 app.add_plugins(bevy_egui::EguiPlugin);
             }
             app.insert_resource(GraphPoints::<Kinetic, Energy>::default())
                 .insert_resource(GraphPoints::<Potential, Energy>::default())
-                .add_systems(PhysicsStep, kinetic_energy.after(merge_colliders))
-                .add_systems(PhysicsStep, potential_energy.after(merge_colliders))
+                .add_systems(
+                    PhysicsStep,
+                    (kinetic_energy, potential_energy)
+                        .after(update_position) // perf: potential energy ordered after position slows sim by ~10%
+                        .after(merge_colliders),
+                )
                 .add_systems(Update, graph);
         }
     }
