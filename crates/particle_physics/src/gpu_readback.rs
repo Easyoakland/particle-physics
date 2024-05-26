@@ -119,7 +119,7 @@ fn map_and_read_buffer(
     let (s, r) = channel::<()>();
 
     // Maps the buffer so it can be read on the cpu
-    let start = Instant::now();
+    let map_async = Instant::now();
     buffer_slice.map_async(MapMode::Read, move |r| match r {
         // This will execute once the gpu is ready, so after the call to poll()
         Ok(_) => s.send(()).expect("Failed to send map update"),
@@ -131,7 +131,7 @@ fn map_and_read_buffer(
     // On desktop this polls until all jobs submitted so far have finished and so map_async will have finished.
     // TODO panic_on_timeout is a noop?
     render_device.poll(Maintain::Wait).panic_on_timeout();
-    dbg!(start.elapsed()); // TODO does map_async block itself on desktop?
+    dbg!(map_async.elapsed()); // TODO does map_async block itself on desktop?
 
     // This blocks until the buffer is mapped
     r.recv().expect("Failed to receive the map_async message");

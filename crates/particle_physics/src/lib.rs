@@ -5,6 +5,7 @@ use bevy::{
     utils::HashSet,
 };
 use components::{Acceleration, Mass, NewAcceleration, Particle, Position, Radius, Velocity};
+use gpu_readback::{receive, MainWorldReceiver};
 use spatial_hash::SparseGrid2d;
 use std::marker::PhantomData;
 
@@ -142,6 +143,14 @@ fn update_acceleration(
             new_accel.0 *= G; // distributive law
         },
     );
+}
+fn update_acceleration_gpu(
+    receiver: ResMut<MainWorldReceiver>,
+    mut new: Query<&mut NewAcceleration>,
+) {
+    if let Some(x) = receive(receiver) {
+        new.iter_mut().zip(x).for_each(|(mut x, accel)| x.0 = accel)
+    }
 }
 /// Set the size of objects proportional to their mass
 fn sync_mass_and_radius(mut particles: Query<(&mut Radius, &Mass), Changed<Mass>>) {
@@ -354,35 +363,9 @@ fn run_physics_step(world: &mut World) {
 
 impl Plugin for ParticlePhysicsPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.add_systems(
-            Update,
-            (
-                (gpu_readback::receive.pipe(
-                    |i: In<Option<_>>, mut new: Query<&mut NewAcceleration>| {
-                        eprintln!(
-                            "{}: {:?}",
-                            line!(),
-                            i.0.as_ref().map(|x: &Vec<_>| &x[0..10])
-                        );
-                        if let Some(x) = i.0 {
-                            new.iter_mut().zip(x).for_each(|(mut x, accel)| x.0 = accel)
-                        }
-                    },
-                )),
-                |query: Query<&NewAcceleration>| {
-                    eprintln!(
-                        "{}: {:?}\n",
-                        line!(),
-                        query
-                            .iter()
-                            .take(10)
-                            .map(|new_accel| new_accel.0)
-                            .collect::<Vec<_>>()
-                    )
-                },
-            )
-                .chain(),
-        );
+        if !app.is_plugin_added::<gpu_readback::GpuReadbackPlugin>() {
+            app.add_plugins(gpu_readback::GpuReadbackPlugin);
+        }
         let mut physics_step = Schedule::new(PhysicsStep);
         physics_step.set_build_settings(bevy::ecs::schedule::ScheduleBuildSettings {
             ambiguity_detection: bevy::ecs::schedule::LogLevel::Warn,
@@ -406,6 +389,7 @@ impl Plugin for ParticlePhysicsPlugin {
                     velocity += timestep * (acceleration + newAcceleration) / 2;
                     */
                     // update_acceleration,
+                    update_acceleration_gpu,
                     update_velocity,
                     update_position,
                 )
@@ -437,9 +421,6 @@ impl Plugin for ParticlePhysicsPlugin {
                         .after(merge_colliders),
                 )
                 .add_systems(Update, graph);
-        }
-        if !app.is_plugin_added::<gpu_readback::GpuReadbackPlugin>() {
-            app.add_plugins(gpu_readback::GpuReadbackPlugin);
         }
     }
 }
