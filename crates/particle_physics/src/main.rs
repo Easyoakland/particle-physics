@@ -32,7 +32,7 @@ fn main() {
         .add_plugins(ParticlePhysicsPlugin {
             graph: true,
             merge: true,
-            substeps: particle_physics::Substeps(10),
+            substeps: particle_physics::Substeps(1),
         })
         .add_plugins(LogDiagnosticsPlugin::default())
         .add_plugins(FrameTimeDiagnosticsPlugin)
