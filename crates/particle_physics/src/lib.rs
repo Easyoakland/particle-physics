@@ -16,7 +16,7 @@ pub mod gpu_readback;
 /// Gravitational constant
 const G: f32 = 6.67430e-11;
 
-const PARTICLE_NUM: usize = u16::MAX as _;
+const PARTICLE_NUM: usize = 10000;
 
 #[derive(Default, Debug, Clone, Copy)]
 struct Energy(f32);
@@ -347,6 +347,8 @@ pub struct ParticlePhysicsPlugin {
     /// Number of [`PhysicsStep`] to perform per frame.
     // TODO enum for adaptive to the framerate
     pub substeps: Substeps,
+    /// Switch to cpu implementation
+    pub cpu: bool,
 }
 
 /// Run [`PhysicsStep`] [`Substeps`] number of times.
@@ -363,8 +365,10 @@ fn run_physics_step(world: &mut World) {
 
 impl Plugin for ParticlePhysicsPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        if !app.is_plugin_added::<gpu_readback::GpuReadbackPlugin>() {
-            app.add_plugins(gpu_readback::GpuReadbackPlugin);
+        if !self.cpu {
+            if !app.is_plugin_added::<gpu_readback::GpuReadbackPlugin>() {
+                app.add_plugins(gpu_readback::GpuReadbackPlugin);
+            }
         }
         let mut physics_step = Schedule::new(PhysicsStep);
         physics_step.set_build_settings(bevy::ecs::schedule::ScheduleBuildSettings {
@@ -388,8 +392,14 @@ impl Plugin for ParticlePhysicsPlugin {
                     newAcceleration = force(time, position) / mass;
                     velocity += timestep * (acceleration + newAcceleration) / 2;
                     */
-                    // update_acceleration,
-                    update_acceleration_gpu,
+                    {
+                        let cpu = self.cpu;
+                        update_acceleration.run_if(move || cpu)
+                    },
+                    {
+                        let cpu = self.cpu;
+                        update_acceleration_gpu.run_if(move || !cpu)
+                    },
                     update_velocity,
                     update_position,
                 )

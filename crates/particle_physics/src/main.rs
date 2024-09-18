@@ -2,6 +2,7 @@ use bevy::{
     app::{App, PluginGroup},
     core::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy},
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    tasks::available_parallelism,
     DefaultPlugins,
 };
 use particle_physics::ParticlePhysicsPlugin;
@@ -23,7 +24,7 @@ fn main() {
                     percent: 0.,
                 },
                 compute: TaskPoolThreadAssignmentPolicy {
-                    min_threads: 1,
+                    min_threads: available_parallelism(),
                     max_threads: usize::MAX,
                     percent: 1.,
                 },
@@ -31,7 +32,8 @@ fn main() {
         }))
         .add_plugins(ParticlePhysicsPlugin {
             graph: true,
-            merge: true,
+            merge: false,
+            cpu: false,
             substeps: particle_physics::Substeps(1),
         })
         .add_plugins(LogDiagnosticsPlugin::default())
